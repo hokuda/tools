@@ -1,0 +1,176 @@
+#!/usr/bin/python3
+
+import os
+import sys
+import tempfile
+import re
+import argparse
+import zipfile
+import shutil
+import glob
+import copy
+import itertools
+
+
+def my_name():
+    index = sys.argv[0].rindex("/");
+    return sys.argv[0][index+1:]
+
+
+class SourcesJar:
+    """
+    info of *sources.jar file:
+    1. path to *sources.jar file,
+    2. base name,
+    3. package name,
+    4. version string,
+    5. numerized version
+
+    >>> sjar = SourcesJar("jboss-server-migration-wildfly13.0-server-1.3.0.Final-redhat-00004-sources.jar")
+    >>> sjar.packagename
+    'jboss-server-migration-wildfly13.0-server'
+    >>> sjar.version
+    '1.3.0.Final-redhat-00004-sources.jar'
+    """
+    def __init__(self, filename):
+        self.filename = filename
+        self.basename = os.path.basename(filename)
+        self.packagename = re.split(r'-[0-9]', self.basename)[0]
+        self.version = copy.copy(self.basename).replace(self.packagename + '-', '')
+        self.numerized_version = self.numerize(self.version)
+        
+    def numerize(self, version):
+        """
+        >>> sjar = SourcesJar("xercesImpl-2.12.0.SP02-redhat-00001-sources.jar")
+        >>> sjar.numerized_version
+        2.12000201
+        """
+        factor = 1
+        num = 0
+        for s in re.split(r'[^0-9]+', version):
+            if s == '':
+                continue
+            num += int(s) * factor
+            factor /= 100
+        return num
+
+    def extract(self, directory):
+        with zipfile.ZipFile(self.filename) as zf:
+            zf.extractall('/'.join([directory, self.basename]))
+    
+
+class MavenRepo:
+    """
+    maven repository
+    """
+
+    def __init__(self, filename):
+        self.filename = filename
+        self.tmpdir = tempfile.mkdtemp(dir=".")
+        with zipfile.ZipFile(filename) as zf:
+            for info in zf.infolist():
+                self.unzip_if_sources_jar(zf, info)
+
+    def unzip_if_sources_jar(self, zf, info):
+        filename = info.filename
+        if filename.endswith("sources.jar"):
+            zf.extract(filename, self.tmpdir)
+
+    def sources_jar_list(self):
+        _list = []
+        for path in glob.glob(self.tmpdir + "/**/*sources.jar", recursive=True):
+            _list.append(SourcesJar(path))
+        return _list
+
+    def clean(self):
+        shutil.rmtree(self.tmpdir)
+
+
+def parse_options():
+    """
+    options are:
+    -d output directory
+    -b base maven repo
+    -i incremental maven repo
+    --debug
+
+    >>> import sys
+    >>> sys.argv = ['test', '-d', my_name(), '-b', my_name(), '-i', my_name()]
+    >>> parse_options()
+    Namespace(base='test', debug=False, directory='test', incremental=['test'])
+    """
+    this = sys.argv[0]
+    directory = "722_src"
+    base_maven_repo = "./jboss-eap-7.2.0-maven-repository.zip"
+    inc_maven_repo1 = "./jboss-eap-7.2.1-incremental-maven-repository.zip"
+    inc_maven_repo2 = "./jboss-eap-7.2.2-incremental-maven-repository.zip"
+    parser = argparse.ArgumentParser(
+        description="Extract sources.jar from the base maven repo zip file and its incrementals, select and unzip only the latest to create the latest full source code base.",
+        epilog="""Example:
+  {} -d {} {} {} {}
+""".format(this, directory, base_maven_repo, inc_maven_repo1, inc_maven_repo2),
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    def _exists(path):
+        if not os.path.exists(path):
+            raise argparse.ArgumentTypeError("{0} does not exist".format(path))
+    def _is_file(path):
+        if not os.path.isfile(path):
+            raise argparse.ArgumentTypeError("{0} is not a file".format(path))
+    def _is_readable(path):
+        if not os.access(path, os.R_OK):
+            raise argparse.ArgumentTypeError("{0} is not readable".format(path))
+    def _is_readable_file(path):
+        _exists(path)
+        _is_file(path)
+        _is_readable(path)
+        return path
+    parser.add_argument(
+        '-d',
+        '--directory',
+        action='store',
+        help="output directory",
+        required=True,
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help=argparse.SUPPRESS # do not show this arg in help
+    )
+    parser.add_argument('file', nargs='+', help='maven repo zip file')
+    opts = parser.parse_args()
+
+    return opts
+
+
+def select_latest_source_jars(sources_jar_list):
+    sources_jar_list.sort(key=lambda x: x.packagename)
+    for packagename, versions in itertools.groupby(sources_jar_list, key=lambda x: x.packagename):
+        versions_list = [x for x in versions]
+        versions_list.sort(key=lambda x: x.numerized_version)
+        yield versions_list[-1]
+
+
+def main():
+    opts = parse_options()
+    repos = []
+    print("Merging:")
+    for repo in opts.file:
+        print(repo)
+        repos.append(MavenRepo(repo))
+    sources_jar_list = []
+    for repo in repos:
+        sources_jar_list += repo.sources_jar_list()
+    for sources_jar in select_latest_source_jars(sources_jar_list):
+        print("Extracting " + sources_jar.basename)
+        sources_jar.extract(opts.directory)
+    for repo in repos:
+        repo.clean()
+
+
+if __name__ == "__main__":
+    if __file__ == "./test":
+        import doctest
+        doctest.testmod(verbose=True)
+        sys.exit(0)
+    main()        
