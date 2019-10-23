@@ -162,7 +162,7 @@ def main():
     for repo in repos:
         sources_jar_list += repo.sources_jar_list()
     for sources_jar in select_latest_source_jars(sources_jar_list):
-        print("Extracting " + sources_jar.basename)
+        print("Unzipping " + sources_jar.basename)
         sources_jar.extract(opts.directory)
     for repo in repos:
         repo.clean()
